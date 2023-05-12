@@ -1,24 +1,215 @@
-name: 'build-test'
-on: # rebuild any PRs and main branch changes
+name: "Test setup-ros"
+on:
   pull_request:
   push:
     branches:
-      - main
-      - 'releases/*'
+      - master
+      - "releases/*"
+  schedule:
+    # Run the CI automatically twice per day to look for flakyness.
+    - cron: "0 */12 * * *"
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
 jobs:
-  build: # make sure build/ci work properly
+  test_environment:
+    name: "Check development tools"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macOS-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - uses: ./ # Uses an action in the root directory
+      - run: .github/workflows/check-environment.sh
+
+  test_environment_linux:
+    name: "Check development tools"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-20.04
+          - ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - uses: ./ # Uses an action in the root directory
+      - run: .github/workflows/check-environment.sh
+
+  # Validates that once setup-ros finished, the ROS distribution
+  # setup.sh / local_setup.bat can be sourced, and the ROS distribution is
+  # functional.
+  test_ros_binary_install:
+    name: "Check ROS distribution"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          # TODO(ros-tooling/setup-ros#107): Add OS X support
+          # - macOS-latest
+          - windows-latest
+        ros_distribution:
+          # Foxy Fitzroy (June 2020 - May 2023)
+          - foxy
+          # Humble Hawksbill (May 2022 - May 2027)
+          - humble
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - uses: ./ # Uses an action in the root directory
+        with:
+          required-ros-distributions: ${{ matrix.ros_distribution }}
+      - run: .github/workflows/check-environment.sh
+      - run: .github/workflows/check-ros2-distribution.sh "${{ matrix.ros_distribution }}"
+        if: matrix.os != 'windows-latest'
+      - env:
+          ROSDISTRO: ${{ matrix.ros_distribution }}
+        run: .github/workflows/check-ros2-distribution-win.bat
+        shell: cmd
+        if: matrix.os == 'windows-latest'
+
+  test_ros_binary_install_ubuntu:
+    name: "Check ROS distribution"
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distribution:
+          - melodic
+          - noetic
+          - foxy
+          - humble
+          - rolling
+
+        # Define the Docker image(s) associated with each ROS distribution.
+        # The include syntax allows additional variables to be defined, like
+        # docker_image in this case. See documentation:
+        # https://help.github.com/en/actions/reference/workflow-syntax-for-github-actions#example-including-configurations-in-a-matrix-build
+        #
+        # Platforms are defined in REP 3: https://ros.org/reps/rep-0003.html
+        include:
+          # Melodic Morenia (May 2018 - May 2023)
+          - docker_image: ubuntu:bionic
+            ros_distribution: melodic
+            ros_version: 1
+
+          # Noetic Ninjemys (May 2020 - May 2025)
+          - docker_image: ubuntu:focal
+            ros_distribution: noetic
+            ros_version: 1
+
+          # Foxy Fitzroy (June 2020 - May 2023)
+          - docker_image: ubuntu:focal
+            ros_distribution: foxy
+            ros_version: 2
+
+          # Humble Hawksbill (May 2022 - May 2027)
+          - docker_image: ubuntu:jammy
+            ros_distribution: humble
+            ros_version: 2
+
+          # Rolling Ridley (see REP 2002: https://www.ros.org/reps/rep-2002.html)
+          - docker_image: ubuntu:jammy
+            ros_distribution: rolling
+            ros_version: 2
+
+    # ROS 1 tests only run on Ubuntu
+    container:
+      image: ${{ matrix.docker_image }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: |
-          npm install
-      - run: |
-          npm run all
-  test: # make sure the action works on a clean machine without building
-    runs-on: ubuntu-latest
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - uses: ./ # Uses an action in the root directory
+        with:
+          required-ros-distributions: ${{ matrix.ros_distribution }}
+      - run: .github/workflows/check-environment.sh
+      - run: .github/workflows/check-ros-distribution.sh "${{ matrix.ros_distribution }}"
+        if: matrix.ros_version == 1
+      - run: .github/workflows/check-ros2-distribution.sh "${{ matrix.ros_distribution }}"
+        if: matrix.ros_version == 2
+
+  test_multiple_ros_installations:
+    name: "ROS and ROS 2 Binary Install Test Suite (Linux only)"
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - uses: ./ # Uses an action in the root directory
+        with:
+          required-ros-distributions: noetic foxy
+      - run: .github/workflows/check-ros2-distribution.sh foxy
+      - run: .github/workflows/check-ros-distribution.sh noetic
+
+  test_repo_with_root_setup_cfg:
+    name: "Test with setup.cfg file in root directory (Linux only)"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - run: cp .github/workflows/test_setup.cfg setup.cfg
+      - uses: ./ # Uses an action in the root directory
+      - run: colcon --help
+
+  test_on_setup_ros_docker_container:
+    name: "Test on a setup-ros-docker container"
+    runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-focal-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
+      - uses: ./
+
+  test_install_connext:
+    name: "Test with RTI Connext DDS"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-20.04
+          - ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: "16.x"
+      - run: .github/workflows/build-and-test.sh
       - uses: ./
         with:
-          milliseconds: 1000
+          install-connext: true
+      - run: .github/workflows/check-environment.sh
+      - run: dpkg -l | grep rti-connext-dds-
